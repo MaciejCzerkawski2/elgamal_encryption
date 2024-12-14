@@ -46,7 +46,6 @@ def generate_large_prime(parent, bits=128):
     return nextprime(num)  # Znajdź najbliższą liczbę pierwszą
 
 
-
 def generate_keys(bits=128):
     """Generuje klucze publiczne i prywatne."""
     p = generate_large_prime(bits)  # Duża liczba pierwsza
@@ -92,12 +91,25 @@ class ElGamalApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Szyfrowanie ElGamal")
-        self.root.geometry("600x800")
+        self.root.geometry("800x800")
 
         self.profiles = self.load_profiles()
         self.recipients = self.load_recipients()
         self.public_key = None
         self.private_key = None
+
+        self.show_menu()
+
+    def set_background(self, widget, color):
+        """Rekursywnie ustawia kolor tła dla wszystkich widżetów."""
+        widget.configure(bg=color)
+        for child in widget.winfo_children():
+            try:
+                child.configure(bg=color)
+            except:
+                pass
+            self.set_background(child, color)
+
         self.show_menu()
 
     def load_profiles(self):
@@ -167,6 +179,13 @@ class ElGamalApp:
                 ).pack(side=tk.LEFT)
 
         tk.Button(self.root, text="Dodaj odbiorcę", command=self.add_recipient).pack(pady=10)
+
+        # Wczytanie i przypisanie obrazka jako atrybut klasy
+        self.image = tk.PhotoImage(file="porsche3.png")
+        self.image = self.image.subsample(2, 2)
+        # Dodanie obrazka do widgetu Label
+        label = tk.Label(self.root, image=self.image)
+        label.pack(pady=20)
 
     def delete_profile(self, profile_name):
         """Usuwa profil klucza."""
@@ -413,3 +432,5 @@ if __name__ == "__main__":
     root = tk.Tk()
     app = ElGamalApp(root)
     root.mainloop()
+
+
