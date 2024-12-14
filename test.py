@@ -1,17 +1,50 @@
 import tkinter as tk
 from tkinter import messagebox
-from sympy import isprime, mod_inverse
+from sympy import isprime, mod_inverse, nextprime
 import random
 import json
 import os
+import time
+import hashlib
 
 
-def generate_large_prime(bits=128):
-    """Generuje dużą liczbę pierwszą o zadanej liczbie bitów."""
-    while True:
-        num = random.getrandbits(bits)
-        if isprime(num):
-            return num
+def collect_mouse_entropy(parent, duration=3):
+    """Zbiera dane ruchów myszy przez określony czas w ramach głównej aplikacji."""
+    mouse_data = []
+
+    def mouse_movement(event):
+        """Zapisuje współrzędne kursora i czas."""
+        x, y = event.x, event.y
+        timestamp = int(time.time() * 1000)
+        mouse_data.append((x, y, timestamp))
+
+    # Utwórz nowe okno w ramach głównej aplikacji
+    top = tk.Toplevel(parent)
+    top.geometry("400x300")
+    top.title("Ruchy myszy - Zbieranie entropii")
+
+    label = tk.Label(top, text="Porusz myszą przez kilka sekund...", font=("Arial", 14))
+    label.pack(pady=50)
+
+    top.bind("<Motion>", mouse_movement)
+
+    # Zamknij okno po określonym czasie
+    parent.after(duration * 1000, top.destroy)
+    parent.wait_window(top)  # Zatrzymaj działanie, aż okno zostanie zamknięte
+
+    # Przetwarzanie danych ruchów myszy na hash
+    data_string = ';'.join(f"{x},{y},{timestamp}" for x, y, timestamp in mouse_data)
+    data_bytes = data_string.encode('utf-8')
+    sha256_hash = hashlib.sha256(data_bytes).hexdigest()
+    return int(sha256_hash[:32], 16)  # Zwróć hash jako liczba całkowita (128 bitów)
+
+
+def generate_large_prime(parent, bits=128):
+    """Generuje dużą liczbę pierwszą z dodatkiem entropii myszy."""
+    entropy = collect_mouse_entropy(parent)
+    num = random.getrandbits(bits) ^ entropy  # Dodanie entropii do losowej liczby
+    return nextprime(num)  # Znajdź najbliższą liczbę pierwszą
+
 
 
 def generate_keys(bits=128):
@@ -181,8 +214,15 @@ class ElGamalApp:
 
     def generate_new_keys(self):
         """Generuje nowe klucze."""
-        self.public_key, self.private_key = generate_keys(bits=128)
+        self.public_key, self.private_key = self.create_keys(bits=128)
         self.show_save_key_interface()
+
+    def create_keys(self, bits=128):
+        p = generate_large_prime(self.root, bits)
+        g = random.randint(2, p - 1)
+        x = random.randint(1, p - 2)
+        h = pow(g, x, p)
+        return (p, g, h), (p, x)
 
     def show_save_key_interface(self):
         """Interfejs zapisywania nowo wygenerowanych kluczy."""
