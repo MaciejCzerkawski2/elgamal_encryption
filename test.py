@@ -46,7 +46,6 @@ def generate_large_prime(parent, bits=128):
     return nextprime(num)  # Znajdź najbliższą liczbę pierwszą
 
 
-
 def generate_keys(bits=128):
     """Generuje klucze publiczne i prywatne."""
     p = generate_large_prime(bits)  # Duża liczba pierwsza
@@ -99,8 +98,6 @@ class ElGamalApp:
         self.public_key = None
         self.private_key = None
 
-
-
         self.show_menu()
 
     def set_background(self, widget, color):
@@ -114,7 +111,6 @@ class ElGamalApp:
             self.set_background(child, color)
 
         self.show_menu()
-
 
     def load_profiles(self):
         """Ładuje profile z pliku JSON."""
