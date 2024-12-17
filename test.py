@@ -8,45 +8,52 @@ import time
 import hashlib
 
 
-def collect_mouse_entropy(parent, duration=3):
-    """Zbiera dane ruchów myszy przez określony czas w ramach głównej aplikacji."""
+def collect_mouse_entropy(parent, duration=3, bits=1024):
+    """Zbiera dane ruchów myszy i generuje hash o określonej długości."""
     mouse_data = []
 
     def mouse_movement(event):
-        """Zapisuje współrzędne kursora i czas."""
         x, y = event.x, event.y
         timestamp = int(time.time() * 1000)
         mouse_data.append((x, y, timestamp))
 
-    # Utwórz nowe okno w ramach głównej aplikacji
     top = tk.Toplevel(parent)
     top.geometry("400x300")
     top.title("Ruchy myszy - Zbieranie entropii")
-
     label = tk.Label(top, text="Porusz myszą przez kilka sekund...", font=("Arial", 14))
     label.pack(pady=50)
-
     top.bind("<Motion>", mouse_movement)
-
-    # Zamknij okno po określonym czasie
     parent.after(duration * 1000, top.destroy)
-    parent.wait_window(top)  # Zatrzymaj działanie, aż okno zostanie zamknięte
+    parent.wait_window(top)
 
-    # Przetwarzanie danych ruchów myszy na hash
     data_string = ';'.join(f"{x},{y},{timestamp}" for x, y, timestamp in mouse_data)
-    data_bytes = data_string.encode('utf-8')
-    sha256_hash = hashlib.sha256(data_bytes).hexdigest()
-    return int(sha256_hash[:32], 16)  # Zwróć hash jako liczba całkowita (128 bitów)
+    return generate_large_hash(data_string, bits=bits)
+
+import hashlib
+
+def generate_large_hash(data, bits=1024):
+    """Generuje hash o określonej długości (np. 1024 bity)."""
+    required_hashes = bits // 256  # Liczba SHA-256 potrzebnych do uzyskania odpowiedniej długości
+    hash_result = b""  # Będziemy składać kolejne wyniki hashów jako bajty
+
+    for i in range(required_hashes):
+        # Dodajemy unikalność dla każdej iteracji, np. dodając indeks
+        current_hash = hashlib.sha256((data + str(i)).encode('utf-8')).digest()
+        hash_result += current_hash  # Składamy wyniki hashów
+
+    # Przytnij wynik do żądanej liczby bitów (jeśli nie jest wielokrotnością 256)
+    total_bytes = bits // 8  # Liczba bajtów (1 bajt = 8 bitów)
+    return int.from_bytes(hash_result[:total_bytes], 'big')  # Konwersja na liczbę całkowitą
 
 
-def generate_large_prime(parent, bits=128):
+def generate_large_prime(parent, bits=1024):
     """Generuje dużą liczbę pierwszą z dodatkiem entropii myszy."""
     entropy = collect_mouse_entropy(parent)
     num = random.getrandbits(bits) ^ entropy  # Dodanie entropii do losowej liczby
     return nextprime(num)  # Znajdź najbliższą liczbę pierwszą
 
 
-def generate_keys(bits=128):
+def generate_keys(bits=1024):
     """Generuje klucze publiczne i prywatne."""
     p = generate_large_prime(bits)  # Duża liczba pierwsza
     g = random.randint(2, p - 2)  # Generator grupy
@@ -90,7 +97,7 @@ def decrypt_message(private_key, ciphertext):
 class ElGamalApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Szyfrowanie ElGamal")
+        self.root.title("Cryptify")
         self.root.geometry("800x800")
 
         self.profiles = self.load_profiles()
@@ -136,9 +143,19 @@ class ElGamalApp:
         with open("recipients.json", "w") as f:
             json.dump(self.recipients, f)
 
+
     def show_menu(self):
+
+
         """Wyświetla menu główne."""
         self.clear_window()
+
+        # Wczytanie i przypisanie obrazka jako atrybut klasy
+        self.image = tk.PhotoImage(file="encryptifylogo.png")
+        self.image = self.image.subsample(2, 2)
+        # Dodanie obrazka do widgetu Label
+        label = tk.Label(self.root, image=self.image)
+        label.pack(pady=20)
 
         tk.Label(self.root, text="Wybierz opcję:").pack(pady=10)
         tk.Button(self.root, text="Wygeneruj nowe klucze", command=self.generate_new_keys).pack(pady=5)
@@ -233,10 +250,10 @@ class ElGamalApp:
 
     def generate_new_keys(self):
         """Generuje nowe klucze."""
-        self.public_key, self.private_key = self.create_keys(bits=128)
+        self.public_key, self.private_key = self.create_keys(bits=1024)
         self.show_save_key_interface()
 
-    def create_keys(self, bits=128):
+    def create_keys(self, bits=1024):
         p = generate_large_prime(self.root, bits)
         g = random.randint(2, p - 1)
         x = random.randint(1, p - 2)
