@@ -1,436 +1,312 @@
 import tkinter as tk
-from tkinter import messagebox
-from sympy import isprime, mod_inverse, nextprime
+from tkinter import messagebox, filedialog
+from sympy import mod_inverse, nextprime
 import random
 import json
 import os
 import time
 import hashlib
+import base64
+import struct
 
 
 def collect_mouse_entropy(parent, duration=3):
-    """Zbiera dane ruchów myszy przez określony czas w ramach głównej aplikacji."""
+    """Collects mouse movement data for entropy."""
     mouse_data = []
 
     def mouse_movement(event):
-        """Zapisuje współrzędne kursora i czas."""
         x, y = event.x, event.y
         timestamp = int(time.time() * 1000)
         mouse_data.append((x, y, timestamp))
 
-    # Utwórz nowe okno w ramach głównej aplikacji
     top = tk.Toplevel(parent)
     top.geometry("400x300")
-    top.title("Ruchy myszy - Zbieranie entropii")
+    top.title("Mouse Movement - Collecting Entropy")
 
-    label = tk.Label(top, text="Porusz myszą przez kilka sekund...", font=("Arial", 14))
+    label = tk.Label(top, text="Move the mouse for a few seconds...", font=("Arial", 14))
     label.pack(pady=50)
 
     top.bind("<Motion>", mouse_movement)
-
-    # Zamknij okno po określonym czasie
     parent.after(duration * 1000, top.destroy)
-    parent.wait_window(top)  # Zatrzymaj działanie, aż okno zostanie zamknięte
+    parent.wait_window(top)
 
-    # Przetwarzanie danych ruchów myszy na hash
     data_string = ';'.join(f"{x},{y},{timestamp}" for x, y, timestamp in mouse_data)
     data_bytes = data_string.encode('utf-8')
     sha256_hash = hashlib.sha256(data_bytes).hexdigest()
-    return int(sha256_hash[:32], 16)  # Zwróć hash jako liczba całkowita (128 bitów)
+    return int(sha256_hash[:32], 16)
 
 
 def generate_large_prime(parent, bits=128):
-    """Generuje dużą liczbę pierwszą z dodatkiem entropii myszy."""
+    """Generates a large prime number with mouse entropy."""
     entropy = collect_mouse_entropy(parent)
-    num = random.getrandbits(bits) ^ entropy  # Dodanie entropii do losowej liczby
-    return nextprime(num)  # Znajdź najbliższą liczbę pierwszą
+    num = random.getrandbits(bits) ^ entropy
+    return nextprime(num)
 
 
-def generate_keys(bits=128):
-    """Generuje klucze publiczne i prywatne."""
-    p = generate_large_prime(bits)  # Duża liczba pierwsza
-    g = random.randint(2, p - 2)  # Generator grupy
-    x = random.randint(1, p - 2)  # Klucz prywatny
-    h = pow(g, x, p)  # h = g^x mod p (część klucza publicznego)
-    public_key = (p, g, h)
-    private_key = (p, x)
-    return public_key, private_key
+def split_file_to_chunks(file_path, chunk_size):
+    """Splits a file into chunks with length information."""
+    chunks = []
+    with open(file_path, "rb") as f:
+        while chunk := f.read(chunk_size - 8):  # Reserve 8 bytes for length
+            # Store the original length at the start of the chunk
+            length_bytes = struct.pack(">Q", len(chunk))
+            padded_chunk = length_bytes + chunk
+            # Pad to full chunk size if needed
+            if len(padded_chunk) < chunk_size:
+                padded_chunk += b'\x00' * (chunk_size - len(padded_chunk))
+            chunks.append(padded_chunk)
+    return chunks
 
 
-def text_to_number(text):
-    """Konwertuje tekst na liczbę."""
-    return int.from_bytes(text.encode('utf-8'), 'big')
+def merge_chunks_to_file(chunks, output_path):
+    """Merges chunks into a single file, removing padding."""
+    with open(output_path, "wb") as f:
+        for chunk in chunks:
+            # Extract the original length from the first 8 bytes
+            original_length = struct.unpack(">Q", chunk[:8])[0]
+            # Write only the actual data (no padding)
+            f.write(chunk[8:8 + original_length])
 
 
-def number_to_text(number):
-    """Konwertuje liczbę na tekst."""
-    return number.to_bytes((number.bit_length() + 7) // 8, 'big').decode('utf-8')
-
-
-def encrypt_message(public_key, message):
-    """Szyfruje wiadomość za pomocą klucza publicznego."""
+def encrypt_chunk(public_key, chunk):
+    """Encrypts a chunk of data."""
     p, g, h = public_key
-    message_number = text_to_number(message)
-    k = random.randint(1, p - 2)  # Losowy klucz sesyjny
+    chunk_number = int.from_bytes(chunk, 'big')
+    if chunk_number >= p:
+        raise ValueError("Chunk too large for the selected public key!")
+    k = random.randint(1, p - 2)
     c1 = pow(g, k, p)
-    c2 = (pow(h, k, p) * message_number) % p
-    return c1, c2
+    c2 = (pow(h, k, p) * chunk_number) % p
+
+    # Use a consistent byte length based on prime size
+    bytes_length = (p.bit_length() + 7) // 8
+    return base64.b64encode(c1.to_bytes(bytes_length, 'big')).decode(), \
+        base64.b64encode(c2.to_bytes(bytes_length, 'big')).decode()
 
 
-def decrypt_message(private_key, ciphertext):
-    """Deszyfruje wiadomość za pomocą klucza prywatnego."""
+def decrypt_chunk(private_key, c1_encoded, c2_encoded, chunk_size):
+    """Decrypts a chunk of data."""
     p, x = private_key
-    c1, c2 = ciphertext
+    c1 = int.from_bytes(base64.b64decode(c1_encoded), 'big')
+    c2 = int.from_bytes(base64.b64decode(c2_encoded), 'big')
     s = pow(c1, x, p)
     s_inv = mod_inverse(s, p)
-    message_number = (c2 * s_inv) % p
-    return number_to_text(message_number)
+    chunk_number = (c2 * s_inv) % p
+    return chunk_number.to_bytes(chunk_size, 'big')
 
 
 class ElGamalApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Szyfrowanie ElGamal")
-        self.root.geometry("800x800")
-
+        self.root.title("ElGamal Encryption")
+        self.setup_profiles_directory()
         self.profiles = self.load_profiles()
-        self.recipients = self.load_recipients()
         self.public_key = None
         self.private_key = None
-
         self.show_menu()
 
-    def set_background(self, widget, color):
-        """Rekursywnie ustawia kolor tła dla wszystkich widżetów."""
-        widget.configure(bg=color)
-        for child in widget.winfo_children():
-            try:
-                child.configure(bg=color)
-            except:
-                pass
-            self.set_background(child, color)
-
-        self.show_menu()
+    def setup_profiles_directory(self):
+        """Creates a profiles directory if it doesn't exist."""
+        self.profiles_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "profiles")
+        os.makedirs(self.profiles_dir, exist_ok=True)
+        self.profiles_file = os.path.join(self.profiles_dir, "profiles.json")
 
     def load_profiles(self):
-        """Ładuje profile z pliku JSON."""
-        if os.path.exists("profiles.json"):
-            with open("profiles.json", "r") as f:
-                return json.load(f)
+        """Loads profiles from the JSON file."""
+        try:
+            if os.path.exists(self.profiles_file):
+                with open(self.profiles_file, "r") as f:
+                    # Convert tuples stored as lists back to tuples
+                    profiles = json.load(f)
+                    for profile in profiles.values():
+                        profile["public_key"] = tuple(profile["public_key"])
+                        profile["private_key"] = tuple(profile["private_key"])
+                    return profiles
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to load profiles: {str(e)}")
         return {}
 
     def save_profiles(self):
-        """Zapisuje profile do pliku JSON."""
-        with open("profiles.json", "w") as f:
-            json.dump(self.profiles, f)
-
-    def load_recipients(self):
-        """Ładuje odbiorców z pliku JSON."""
-        if os.path.exists("recipients.json"):
-            with open("recipients.json", "r") as f:
-                return json.load(f)
-        return {}
-
-    def save_recipients(self):
-        """Zapisuje odbiorców do pliku JSON."""
-        with open("recipients.json", "w") as f:
-            json.dump(self.recipients, f)
+        """Saves profiles to the JSON file."""
+        try:
+            with open(self.profiles_file, "w") as f:
+                # Convert tuples to lists for JSON serialization
+                profiles_copy = {}
+                for name, profile in self.profiles.items():
+                    profiles_copy[name] = {
+                        "public_key": list(profile["public_key"]),
+                        "private_key": list(profile["private_key"])
+                    }
+                json.dump(profiles_copy, f)
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to save profiles: {str(e)}")
 
     def show_menu(self):
-        """Wyświetla menu główne."""
         self.clear_window()
 
-        tk.Label(self.root, text="Wybierz opcję:").pack(pady=10)
-        tk.Button(self.root, text="Wygeneruj nowe klucze", command=self.generate_new_keys).pack(pady=5)
-        tk.Button(self.root, text="Wprowadź istniejące klucze", command=self.use_existing_keys).pack(pady=5)
+        tk.Label(self.root, text="Select an option:").pack(pady=10)
+        tk.Button(self.root, text="Generate New Keys", command=self.generate_new_keys).pack(pady=5)
 
         if self.profiles:
-            tk.Label(self.root, text="Zapisane profile kluczy:").pack(pady=10)
-            for profile_name in list(self.profiles.keys()):
+            tk.Label(self.root, text="Saved Key Profiles:").pack(pady=10)
+            for profile_name in self.profiles.keys():
                 frame = tk.Frame(self.root)
                 frame.pack(pady=2)
                 tk.Button(
-                    frame,
-                    text=profile_name,
-                    command=lambda name=profile_name: self.load_profile(name)
+                    frame, text=profile_name,
+                    command=lambda name=profile_name: self.show_profile_interface(name)
                 ).pack(side=tk.LEFT)
                 tk.Button(
-                    frame,
-                    text="X",
-                    fg="red",
+                    frame, text="Delete", fg="red",
                     command=lambda name=profile_name: self.delete_profile(name)
                 ).pack(side=tk.LEFT)
 
-        if self.recipients:
-            tk.Label(self.root, text="Lista odbiorców:").pack(pady=10)
-            for recipient_name in list(self.recipients.keys()):
-                frame = tk.Frame(self.root)
-                frame.pack(pady=2)
-                tk.Button(
-                    frame,
-                    text=recipient_name,
-                    command=lambda name=recipient_name: self.show_recipient_interface(name)
-                ).pack(side=tk.LEFT)
-                tk.Button(
-                    frame,
-                    text="X",
-                    fg="red",
-                    command=lambda name=recipient_name: self.delete_recipient(name)
-                ).pack(side=tk.LEFT)
-
-        tk.Button(self.root, text="Dodaj odbiorcę", command=self.add_recipient).pack(pady=10)
-
-        # Wczytanie i przypisanie obrazka jako atrybut klasy
-        self.image = tk.PhotoImage(file="porsche3.png")
-        self.image = self.image.subsample(2, 2)
-        # Dodanie obrazka do widgetu Label
-        label = tk.Label(self.root, image=self.image)
-        label.pack(pady=20)
-
     def delete_profile(self, profile_name):
-        """Usuwa profil klucza."""
-        del self.profiles[profile_name]
-        self.save_profiles()
-        self.show_menu()
+        if messagebox.askyesno("Confirm Delete", f"Are you sure you want to delete the profile '{profile_name}'?"):
+            del self.profiles[profile_name]
+            self.save_profiles()
+            self.show_menu()
 
-    def delete_recipient(self, recipient_name):
-        """Usuwa odbiorcę."""
-        del self.recipients[recipient_name]
-        self.save_recipients()
-        self.show_menu()
-
-    def use_existing_keys(self):
-        """Przechodzi do interfejsu wprowadzania istniejących kluczy."""
-        self.clear_window()
-        self.add_back_button()
-
-        tk.Label(self.root, text="Wprowadź klucz publiczny (p, g, h):").pack(pady=5)
-        self.entry_public_key = tk.Text(self.root, height=3, width=50)
-        self.entry_public_key.pack(pady=5)
-
-        tk.Label(self.root, text="Wprowadź klucz prywatny (p, x):").pack(pady=5)
-        self.entry_private_key = tk.Text(self.root, height=2, width=50)
-        self.entry_private_key.pack(pady=5)
-
-        tk.Button(self.root, text="Zatwierdź", command=self.set_existing_keys).pack(pady=10)
-
-    def set_existing_keys(self):
-        """Ustawia istniejące klucze na podstawie wprowadzonych danych."""
-        try:
-            self.public_key = self.parse_key(self.entry_public_key.get("1.0", tk.END).strip())
-            self.private_key = self.parse_key(self.entry_private_key.get("1.0", tk.END).strip())
-            if len(self.public_key) != 3 or len(self.private_key) != 2:
-                raise ValueError("Nieprawidłowy format kluczy.")
-            self.show_main_interface()
-        except Exception as e:
-            messagebox.showerror("Błąd", f"Nie udało się wprowadzić kluczy: {e}")
-
-    def load_profile(self, profile_name):
-        """Ładuje klucze z wybranego profilu."""
-        profile = self.profiles[profile_name]
-        self.public_key, self.private_key = profile["public_key"], profile["private_key"]
-        self.show_main_interface()
+    def clear_window(self):
+        for widget in self.root.winfo_children():
+            widget.destroy()
 
     def generate_new_keys(self):
-        """Generuje nowe klucze."""
-        self.public_key, self.private_key = self.create_keys(bits=128)
-        self.show_save_key_interface()
-
-    def create_keys(self, bits=128):
-        p = generate_large_prime(self.root, bits)
-        g = random.randint(2, p - 1)
+        p = generate_large_prime(self.root)
+        g = random.randint(2, p - 2)
         x = random.randint(1, p - 2)
         h = pow(g, x, p)
-        return (p, g, h), (p, x)
+        self.public_key = (p, g, h)
+        self.private_key = (p, x)
+        self.save_new_profile()
 
-    def show_save_key_interface(self):
-        """Interfejs zapisywania nowo wygenerowanych kluczy."""
+    def save_new_profile(self):
         self.clear_window()
-        self.add_back_button()
 
-        tk.Label(self.root, text="Wygenerowano nowe klucze:").pack(pady=5)
+        tk.Label(self.root, text="Enter a profile name for the keys:").pack(pady=10)
+        entry_name = tk.Entry(self.root)
+        entry_name.pack(pady=5)
 
-        tk.Label(self.root, text="Klucz publiczny:").pack(pady=5)
-        self.entry_public_key = tk.Text(self.root, height=3, width=50)
-        self.entry_public_key.insert(tk.END, str(self.public_key))
-        self.entry_public_key.config(state="disabled")
-        self.entry_public_key.pack(pady=5)
+        def save_profile():
+            profile_name = entry_name.get().strip()
+            if not profile_name:
+                messagebox.showerror("Error", "Please enter a profile name")
+                return
+            if profile_name in self.profiles:
+                messagebox.showerror("Error", "Profile name already exists")
+                return
 
-        tk.Label(self.root, text="Klucz prywatny:").pack(pady=5)
-        self.entry_private_key = tk.Text(self.root, height=2, width=50)
-        self.entry_private_key.insert(tk.END, str(self.private_key))
-        self.entry_private_key.config(state="disabled")
-        self.entry_private_key.pack(pady=5)
-
-        tk.Label(self.root, text="Podaj nazwę użytkownika dla kluczy:").pack(pady=5)
-        self.entry_profile_name = tk.Entry(self.root, width=40)
-        self.entry_profile_name.pack(pady=5)
-
-        tk.Button(self.root, text="Zapisz klucze", command=self.save_new_keys).pack(pady=5)
-        tk.Button(self.root, text="Pomiń i przejdź dalej", command=self.show_main_interface).pack(pady=5)
-
-    def save_new_keys(self):
-        """Zapisuje wygenerowane klucze z podaną nazwą."""
-        profile_name = self.entry_profile_name.get()
-        if profile_name:
             self.profiles[profile_name] = {
                 "public_key": self.public_key,
                 "private_key": self.private_key
             }
             self.save_profiles()
-            messagebox.showinfo("Sukces", "Klucze zostały zapisane!")
+            messagebox.showinfo("Success", "Profile saved successfully")
             self.show_menu()
-        else:
-            messagebox.showerror("Błąd", "Nazwa użytkownika nie może być pusta.")
 
-    def add_recipient(self):
-        """Dodaje nowego odbiorcę."""
+        tk.Button(self.root, text="Save", command=save_profile).pack(pady=5)
+        tk.Button(self.root, text="Back", command=self.show_menu).pack(pady=5)
+
+    def show_profile_interface(self, profile_name):
         self.clear_window()
-        self.add_back_button()
 
-        tk.Label(self.root, text="Dodaj nowego odbiorcę:").pack(pady=5)
+        profile = self.profiles[profile_name]
+        self.public_key = profile["public_key"]
+        self.private_key = profile["private_key"]
 
-        tk.Label(self.root, text="Nazwa odbiorcy:").pack(pady=5)
-        self.entry_recipient_name = tk.Entry(self.root, width=40)
-        self.entry_recipient_name.pack(pady=5)
+        tk.Label(self.root, text=f"Profile: {profile_name}").pack(pady=10)
 
-        tk.Label(self.root, text="Klucz publiczny odbiorcy (p, g, h):").pack(pady=5)
-        self.entry_recipient_key = tk.Text(self.root, height=3, width=50)
-        self.entry_recipient_key.pack(pady=5)
+        tk.Label(self.root, text="Public Key:").pack(pady=5)
+        entry_public = tk.Text(self.root, height=3, width=50)
+        entry_public.insert(tk.END, str(self.public_key))
+        entry_public.config(state="disabled")
+        entry_public.pack(pady=5)
 
-        tk.Button(self.root, text="Zapisz odbiorcę", command=self.save_recipient).pack(pady=10)
+        tk.Label(self.root, text="Private Key:").pack(pady=5)
+        entry_private = tk.Text(self.root, height=2, width=50)
+        entry_private.insert(tk.END, str(self.private_key))
+        entry_private.config(state="disabled")
+        entry_private.pack(pady=5)
 
-    def save_recipient(self):
-        """Zapisuje odbiorcę do listy."""
-        name = self.entry_recipient_name.get()
+        tk.Button(self.root, text="Encrypt File", command=self.encrypt_file).pack(pady=5)
+        tk.Button(self.root, text="Decrypt File", command=self.decrypt_file).pack(pady=5)
+        tk.Button(self.root, text="Back", command=self.show_menu).pack(pady=5)
+
+    def encrypt_file(self):
+        file_path = filedialog.askopenfilename()
+        if not file_path:
+            return
+
+        output_path = filedialog.asksaveasfilename(defaultextension=".enc")
+        if not output_path:
+            return
+
         try:
-            key = self.parse_key(self.entry_recipient_key.get("1.0", tk.END).strip())
-            if len(key) != 3:
-                raise ValueError("Klucz publiczny musi mieć format (p, g, h).")
-            self.recipients[name] = key
-            self.save_recipients()
-            messagebox.showinfo("Sukces", "Odbiorca został zapisany!")
-            self.show_menu()
+            # Calculate chunk size based on prime size, reserving space for length
+            chunk_size = (self.public_key[0].bit_length() - 1) // 8
+            chunks = split_file_to_chunks(file_path, chunk_size)
+
+            encrypted_chunks = []
+            total_chunks = len(chunks)
+
+            # Create progress window
+            progress_window = tk.Toplevel(self.root)
+            progress_window.title("Encryption Progress")
+            progress_label = tk.Label(progress_window, text="Encrypting...")
+            progress_label.pack(pady=10)
+
+            for i, chunk in enumerate(chunks, 1):
+                encrypted_chunks.append(encrypt_chunk(self.public_key, chunk))
+                progress_label.config(text=f"Encrypting: {i}/{total_chunks} chunks")
+                progress_window.update()
+
+            with open(output_path, "w") as f:
+                json.dump(encrypted_chunks, f)
+
+            progress_window.destroy()
+            messagebox.showinfo("Success", "File encrypted successfully.")
+
         except Exception as e:
-            messagebox.showerror("Błąd", f"Nie udało się zapisać odbiorcy: {e}")
+            messagebox.showerror("Error", f"Encryption failed: {str(e)}")
 
-    def show_recipient_interface(self, name):
-        """Wyświetla interfejs dla zaszyfrowania wiadomości dla wybranego odbiorcy."""
-        self.clear_window()
-        self.add_back_button()
+    def decrypt_file(self):
+        file_path = filedialog.askopenfilename()
+        if not file_path:
+            return
 
-        public_key = self.recipients[name]
+        output_path = filedialog.asksaveasfilename()
+        if not output_path:
+            return
 
-        tk.Label(self.root, text=f"Szyfrowanie wiadomości dla: {name}").pack(pady=5)
-        tk.Label(self.root, text=f"Klucz publiczny: {public_key}").pack(pady=5)
-
-        tk.Label(self.root, text="Wiadomość do zaszyfrowania (tekst):").pack(pady=5)
-        self.entry_message_encrypt = tk.Entry(self.root, width=50)
-        self.entry_message_encrypt.pack(pady=5)
-
-        tk.Button(
-            self.root,
-            text="Szyfruj wiadomość",
-            command=lambda: self.encrypt_for_recipient(name)
-        ).pack(pady=10)
-
-        tk.Label(self.root, text="Zaszyfrowana wiadomość:").pack(pady=5)
-        self.text_encrypted = tk.Text(self.root, height=3, width=60)
-        self.text_encrypted.pack(pady=5)
-
-    def encrypt_for_recipient(self, name):
-        """Szyfruje wiadomość dla wybranego odbiorcy."""
         try:
-            message = self.entry_message_encrypt.get()
-            public_key = self.recipients[name]
-            c1, c2 = encrypt_message(public_key, message)
-            self.text_encrypted.delete("1.0", tk.END)
-            self.text_encrypted.insert(tk.END, f"({c1}, {c2})")
+            with open(file_path, "r") as f:
+                encrypted_chunks = json.load(f)
+
+            chunk_size = (self.private_key[0].bit_length() - 1) // 8
+            decrypted_chunks = []
+            total_chunks = len(encrypted_chunks)
+
+            # Create progress window
+            progress_window = tk.Toplevel(self.root)
+            progress_window.title("Decryption Progress")
+            progress_label = tk.Label(progress_window, text="Decrypting...")
+            progress_label.pack(pady=10)
+
+            for i, (c1, c2) in enumerate(encrypted_chunks, 1):
+                decrypted_chunks.append(decrypt_chunk(self.private_key, c1, c2, chunk_size))
+                progress_label.config(text=f"Decrypting: {i}/{total_chunks} chunks")
+                progress_window.update()
+
+            merge_chunks_to_file(decrypted_chunks, output_path)
+
+            progress_window.destroy()
+            messagebox.showinfo("Success", "File decrypted successfully.")
+
         except Exception as e:
-            messagebox.showerror("Błąd", f"Nie udało się zaszyfrować wiadomości: {e}")
-
-    def parse_key(self, key_string):
-        """Parsuje klucz wprowadzony jako string i konwertuje go na tuple."""
-        key_string = key_string.strip().strip("()")
-        key_parts = tuple(map(int, key_string.split(",")))
-        return key_parts
-
-    def clear_window(self):
-        """Czyści zawartość okna."""
-        for widget in self.root.winfo_children():
-            widget.destroy()
-
-    def add_back_button(self):
-        """Dodaje przycisk powrotu do menu głównego."""
-        tk.Button(self.root, text="Powrót", command=self.show_menu).pack(anchor="nw")
-
-    def show_main_interface(self):
-        """Wyświetla główny interfejs aplikacji z aktywnymi kluczami."""
-        self.clear_window()
-        self.add_back_button()
-
-        tk.Label(self.root, text="Aktywne klucze:").pack(pady=5)
-
-        tk.Label(self.root, text="Klucz publiczny:").pack(pady=5)
-        self.entry_public_key = tk.Text(self.root, height=3, width=50)
-        self.entry_public_key.insert(tk.END, str(self.public_key))
-        self.entry_public_key.config(state="disabled")
-        self.entry_public_key.pack(pady=5)
-
-        tk.Label(self.root, text="Klucz prywatny:").pack(pady=5)
-        self.entry_private_key = tk.Text(self.root, height=2, width=50)
-        self.entry_private_key.insert(tk.END, str(self.private_key))
-        self.entry_private_key.config(state="disabled")
-        self.entry_private_key.pack(pady=5)
-
-        tk.Label(self.root, text="Wiadomość do zaszyfrowania (tekst):").pack(pady=5)
-        self.entry_message_encrypt = tk.Entry(self.root, width=50)
-        self.entry_message_encrypt.pack(pady=5)
-
-        tk.Button(self.root, text="Szyfruj", command=self.encrypt_message).pack(pady=5)
-
-        tk.Label(self.root, text="Zaszyfrowana wiadomość:").pack(pady=5)
-        self.text_encrypted = tk.Text(self.root, height=3, width=60)
-        self.text_encrypted.pack(pady=5)
-
-        tk.Label(self.root, text="Zaszyfrowana wiadomość (c1, c2):").pack(pady=5)
-        self.entry_message_decrypt = tk.Text(self.root, height=3, width=50)
-        self.entry_message_decrypt.pack(pady=5)
-
-        tk.Button(self.root, text="Deszyfruj", command=self.decrypt_message).pack(pady=5)
-
-        tk.Label(self.root, text="Odszyfrowana wiadomość:").pack(pady=5)
-        self.text_decrypted = tk.Text(self.root, height=3, width=60)
-        self.text_decrypted.pack(pady=5)
-
-    def encrypt_message(self):
-        """Obsługuje szyfrowanie wiadomości."""
-        try:
-            message = self.entry_message_encrypt.get()
-            c1, c2 = encrypt_message(self.public_key, message)
-            self.text_encrypted.delete("1.0", tk.END)
-            self.text_encrypted.insert(tk.END, f"({c1}, {c2})")
-        except Exception as e:
-            messagebox.showerror("Błąd", f"Nie udało się zaszyfrować wiadomości: {e}")
-
-    def decrypt_message(self):
-
-        """Obsługuje deszyfrowanie wiadomości."""
-        try:
-            ciphertext = self.parse_key(self.entry_message_decrypt.get("1.0", tk.END).strip())
-            if len(ciphertext) != 2:
-                raise ValueError("Nieprawidłowy format szyfrogramu.")
-            message = decrypt_message(self.private_key, ciphertext)
-            self.text_decrypted.delete("1.0", tk.END)
-            self.text_decrypted.insert(tk.END, message)
-        except Exception as e:
-            messagebox.showerror("Błąd", f"Nie udało się odszyfrować wiadomości: {e}")
+            messagebox.showerror("Error", f"Decryption failed: {str(e)}")
 
 
-# Uruchomienie aplikacji
 if __name__ == "__main__":
     root = tk.Tk()
     app = ElGamalApp(root)
     root.mainloop()
-
-
