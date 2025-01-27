@@ -24,7 +24,7 @@ A secure file encryption application using the ElGamal encryption algorithm with
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/yourusername/elgamal-encryption.git
+   git clone https://github.com/MaciejCzerkawski2/elgamal_encryption.git
    cd elgamal-encryption
    ```
 
