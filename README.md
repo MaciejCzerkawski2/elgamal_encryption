@@ -38,7 +38,7 @@ A secure file encryption application using the ElGamal encryption algorithm with
 
 1. Run the application:
    ```bash
-   python elgamal_file_encryptor.py
+   python main.py
    ```
 
 2. Generate new keys:
